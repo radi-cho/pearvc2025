@@ -1,0 +1,77 @@
+Patient Name: Timothy Gao 
+Date of Birth: 05/14/2005
+Gender: Male
+Patient ID: 123456789
+
+Contact Information
+Primary Address: 123 Elm Street, Springfield, IL, 62701
+
+Phone Number: (555) 123-4567
+
+Emergency Contact: Jane Doe, Sister, (555) 765-4321
+
+Primary Care Physician
+Name: Dr. Sarah Thompson
+
+Clinic Name: Springfield Family Health Clinic
+
+Phone Number: (555) 234-5678
+
+Email: dr.thompson@sfhealthclinic.com
+
+Medical History
+Chronic Conditions:
+
+Hypertension (Diagnosed 2018)
+
+Type 2 Diabetes Mellitus (Diagnosed 2020)
+
+Past Surgeries:
+
+Appendectomy - 2010
+
+Gallbladder Removal - 2015
+
+Known Allergies:
+
+Penicillin
+
+Peanuts
+
+Current Medications:
+
+Metformin 500mg daily
+
+Lisinopril 10mg daily
+
+Aspirin 81mg daily
+
+Immunization Record
+COVID-19 Vaccine: Pfizer - Complete (2 Doses + Booster in 2023)
+
+Tetanus Booster: Last given in 2022
+
+Influenza Vaccine: 2024
+
+Insurance Information
+Provider: HealthFirst Insurance
+
+Policy Number: HFI987654321
+
+Group Number: HFI12345678
+
+Recent Tests/Screenings
+Blood Panel: March 2025 - Normal Results
+
+Chest X-Ray: January 2025 - No abnormalities detected
+
+Eye Exam: December 2024 - No issues detected
+
+Colonoscopy: October 2023 - Normal Results
+
+Notes & Special Instructions
+Requires assistance walking long distances (uses a cane)
+
+Carry EpiPen for severe allergic reactions to peanuts
+
+Regular monitoring of blood glucose levels due to diabetes.

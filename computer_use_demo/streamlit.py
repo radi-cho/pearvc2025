@@ -6,14 +6,18 @@ import asyncio
 import base64
 import os
 import subprocess
+import tempfile
 import traceback
+import time
+import json
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from enum import StrEnum
 from functools import partial
 from pathlib import PosixPath
-from typing import cast, get_args
+from typing import cast, get_args, Optional
+import base64
 
 import httpx
 import streamlit as st
@@ -24,6 +28,8 @@ from anthropic.types.beta import (
     BetaToolResultBlockParam,
 )
 from streamlit.delta_generator import DeltaGenerator
+
+from openai import OpenAI
 
 from computer_use_demo.loop import (
     APIProvider,
@@ -65,6 +71,8 @@ MODEL_TO_MODEL_CONF: dict[str, ModelConfig] = {
 
 CONFIG_DIR = PosixPath("~/.anthropic").expanduser()
 API_KEY_FILE = CONFIG_DIR / "api_key"
+OPENAI_API_KEY_FILE = CONFIG_DIR / "openai_api_key"
+
 STREAMLIT_STYLE = """
 <style>
     /* Highlight the stop button in red */
@@ -76,9 +84,96 @@ STREAMLIT_STYLE = """
     button[kind=header]:hover {
         background-color: rgb(255, 51, 51);
     }
-     /* Hide the streamlit deploy button */
+    /* Hide the streamlit deploy button */
     .stAppDeployButton {
         visibility: hidden;
+    }
+    
+    /* Custom styling */
+    h1 {
+        color: #4a56e2 !important;
+        text-decoration: underline;
+    }
+    
+    .stButton > button {
+        background-color: #4a56e2 !important;
+        color: white !important;
+    }
+    
+    /* Voice interface styling */
+    .voice-container {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        padding: 20px;
+        margin-bottom: 20px;
+        background: rgba(74, 86, 226, 0.1);
+        border-radius: 10px;
+    }
+    
+    .record-button {
+        width: 80px;
+        height: 80px;
+        border-radius: 50%;
+        background-color: #4a56e2;
+        color: white;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        cursor: pointer;
+        font-size: 24px;
+        margin: 20px 0;
+        border: none;
+    }
+    
+    .record-button:hover {
+        background-color: #354ad6;
+    }
+    
+    .record-button.recording {
+        background-color: #ff4b4b;
+        animation: pulse 1.5s infinite;
+    }
+    
+    @keyframes pulse {
+        0% {
+            transform: scale(1);
+        }
+        50% {
+            transform: scale(1.1);
+        }
+        100% {
+            transform: scale(1);
+        }
+    }
+    
+    .waveform {
+        width: 100%;
+        height: 80px;
+        background-color: #f8f9fa;
+        border-radius: 5px;
+        overflow: hidden;
+        position: relative;
+    }
+    
+    .transcript-area {
+        margin-top: 20px;
+        padding: 10px;
+        border-radius: 5px;
+        background-color: #f8f9fa;
+        min-height: 50px;
+    }
+    
+    /* Split interface into top and bottom */
+    .voice-section {
+        border-bottom: 1px solid #e0e0e0;
+        padding-bottom: 20px;
+        margin-bottom: 20px;
+    }
+    
+    .response-section {
+        max-height: 60vh;
+        overflow-y: auto;
     }
 </style>
 """
@@ -93,6 +188,19 @@ class Sender(StrEnum):
     BOT = "assistant"
     TOOL = "tool"
 
+def autoplay_audio(file_path: str):
+    with open(file_path, "rb") as f:
+        data = f.read()
+        b64 = base64.b64encode(data).decode()
+        md = f"""
+            <audio controls autoplay="true">
+            <source src="data:audio/mp3;base64,{b64}" type="audio/mp3">
+            </audio>
+            """
+        st.markdown(
+            md,
+            unsafe_allow_html=True,
+        )
 
 def setup_state():
     if "messages" not in st.session_state:
@@ -101,6 +209,10 @@ def setup_state():
         # Try to load API key from file first, then environment
         st.session_state.api_key = load_from_storage("api_key") or os.getenv(
             "ANTHROPIC_API_KEY", ""
+        )
+    if "openai_api_key" not in st.session_state:
+        st.session_state.openai_api_key = load_from_storage("openai_api_key") or os.getenv(
+            "OPENAI_API_KEY", ""
         )
     if "provider" not in st.session_state:
         st.session_state.provider = (
@@ -126,6 +238,8 @@ def setup_state():
         st.session_state.token_efficient_tools_beta = False
     if "in_sampling_loop" not in st.session_state:
         st.session_state.in_sampling_loop = False
+    if "transcript" not in st.session_state:
+        st.session_state.transcript = ""
 
 
 def _reset_model():
@@ -154,19 +268,75 @@ def _reset_model_conf():
     st.session_state.thinking_budget = int(model_conf.default_output_tokens / 2)
 
 
+def record_and_transcribe():
+    """Record audio and transcribe using OpenAI API"""
+    if not st.session_state.openai_api_key:
+        st.error("Please set your OpenAI API key in the sidebar.")
+        return None
+    
+    # Record audio using Streamlit's native audio_input
+    audio_bytes = st.audio_input("Record your voice message")
+    
+    if audio_bytes:
+        with st.spinner("Transcribing audio..."):
+            # Save the audio bytes to a temporary file
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as temp_audio:
+                # Read the file data from the UploadedFile object
+                temp_audio.write(audio_bytes.read())
+                temp_audio_path = temp_audio.name
+            
+            # Transcribe the audio using OpenAI
+            transcript = transcribe_audio(temp_audio_path)
+            
+            # Remove the temporary file
+            try:
+                os.unlink(temp_audio_path)
+            except Exception as e:
+                print(f"Error removing temporary file: {e}")
+            
+            if transcript:
+                st.session_state.transcript = transcript
+                return transcript
+            else:
+                st.error("Failed to transcribe audio.")
+                return None
+    
+    return None
+
+
+def transcribe_audio(audio_file_path):
+    """Transcribe audio using OpenAI API"""
+    try:
+        client = OpenAI(api_key=st.session_state.openai_api_key)
+        with open(audio_file_path, "rb") as audio_file:
+            transcription = client.audio.transcriptions.create(
+                model="gpt-4o-mini-transcribe", 
+                file=audio_file
+            )
+        return transcription.text
+    except Exception as e:
+        st.error(f"Error transcribing audio: {e}")
+        return None
+
+
 async def main():
     """Render loop for streamlit"""
     setup_state()
 
     st.markdown(STREAMLIT_STYLE, unsafe_allow_html=True)
+    
+    st.title("VIVA AI")
+    
+    # audio_path = "/home/computeruse/computer_use_demo/pacmac.mp3"
 
-    st.title("Claude Computer Use Demo")
-
-    if not os.getenv("HIDE_WARNING", False):
-        st.warning(WARNING_TEXT)
+    # if os.path.exists(audio_path):
+    #     # Display audio player
+    #     st.audio(audio_path)
+    #     st.write("Playing audio file: pacmac.mp3")
+    # else:
+    #     st.error(f"Error: Audio file not found at {audio_path}")
 
     with st.sidebar:
-
         def _reset_api_provider():
             if st.session_state.provider_radio != st.session_state.provider:
                 _reset_model()
@@ -191,6 +361,13 @@ async def main():
                 key="api_key",
                 on_change=lambda: save_to_storage("api_key", st.session_state.api_key),
             )
+            
+        st.text_input(
+            "OpenAI API Key (for voice transcription)",
+            type="password",
+            key="openai_api_key",
+            on_change=lambda: save_to_storage("openai_api_key", st.session_state.openai_api_key),
+        )
 
         st.number_input(
             "Only send N most recent images",
@@ -241,6 +418,7 @@ async def main():
                 await asyncio.sleep(1)
                 subprocess.run("./start_all.sh", shell=True)  # noqa: ASYNC221
 
+
     if not st.session_state.auth_validated:
         if auth_error := validate_auth(
             st.session_state.provider, st.session_state.api_key
@@ -250,81 +428,157 @@ async def main():
         else:
             st.session_state.auth_validated = True
 
-    chat, http_logs = st.tabs(["Chat", "HTTP Exchange Logs"])
-    new_message = st.chat_input(
-        "Type a message to send to Claude to control the computer..."
-    )
+    # Create tabs for main interface and logs
+    main_tab, http_logs = st.tabs(["Voice Interface", "HTTP Exchange Logs"])
 
-    with chat:
-        # render past chats
-        for message in st.session_state.messages:
-            if isinstance(message["content"], str):
-                _render_message(message["role"], message["content"])
-            elif isinstance(message["content"], list):
-                for block in message["content"]:
-                    # the tool result we send back to the Anthropic API isn't sufficient to render all details,
-                    # so we store the tool use responses
-                    if isinstance(block, dict) and block["type"] == "tool_result":
-                        _render_message(
-                            Sender.TOOL, st.session_state.tools[block["tool_use_id"]]
+    with main_tab:
+        # Split the interface into two sections
+        voice_section = st.container()
+        response_section = st.container()
+        
+        with voice_section:
+            st.markdown('<div class="voice-section">', unsafe_allow_html=True)
+            
+            # Voice interface with improved layout
+            # st.markdown('<div class="voice-container">', unsafe_allow_html=True)
+            
+            col1, col2, col3 = st.columns([1, 2, 1])
+            with col2:
+                # st.write("👇 Click the microphone below to speak to the agent")                
+                audio_bytes = st.audio_input("Speak to the agent", key="audio_recorder")
+                
+                if audio_bytes:
+                    with st.spinner("Transcribing..."):
+                        # Save the audio bytes to a temporary file
+                        with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as temp_audio:
+                            # Read the file data from the UploadedFile object
+                            temp_audio.write(audio_bytes.read())
+                            temp_audio_path = temp_audio.name
+                        
+                        # Transcribe the audio using OpenAI
+                        transcript = transcribe_audio(temp_audio_path)
+                        
+                        # Remove the temporary file
+                        try:
+                            os.unlink(temp_audio_path)
+                        except Exception as e:
+                            print(f"Error removing temporary file: {e}")
+                        
+                        print("TRANSCRIBED AUDIO: ", transcript)
+                        
+                        if transcript:
+                            st.session_state.transcript = transcript
+                            # Add the transcript to messages
+                            st.session_state.messages.append(
+                                {
+                                    "role": Sender.USER,
+                                    "content": [
+                                        *maybe_add_interruption_blocks(),
+                                        BetaTextBlockParam(type="text", text=transcript),
+                                    ],
+                                }
+                            )
+                            # st.experimental_rerun()
+                        else:
+                            st.error("Failed to transcribe audio.")
+            
+            # Show transcript if available
+            if st.session_state.transcript:
+                st.markdown(f"<div class='transcript-area'><strong>You said:</strong> {st.session_state.transcript}</div>", unsafe_allow_html=True)
+            
+            # Option to type text instead
+            with st.expander("Or type your message instead"):
+                text_input = st.text_area("Type your message", key="text_input")
+                if st.button("Send", key="send_text"):
+                    if text_input.strip():
+                        st.session_state.messages.append(
+                            {
+                                "role": Sender.USER,
+                                "content": [
+                                    *maybe_add_interruption_blocks(),
+                                    BetaTextBlockParam(type="text", text=text_input),
+                                ],
+                            }
                         )
-                    else:
-                        _render_message(
-                            message["role"],
-                            cast(BetaContentBlockParam | ToolResult, block),
-                        )
+                        st.session_state.transcript = text_input
+                        
+                        st.session_state.messages.append(
+                                {
+                                    "role": Sender.USER,
+                                    "content": [
+                                        *maybe_add_interruption_blocks(),
+                                        BetaTextBlockParam(type="text", text=text_input),
+                                    ],
+                                }
+                            )
+            
+            st.markdown('</div>', unsafe_allow_html=True)
+            st.markdown('</div>', unsafe_allow_html=True)
+        
+        with response_section:
+            st.markdown('<div class="response-section">', unsafe_allow_html=True)
+            st.subheader("Agent Response")
+            
+            # Show agent responses
+            for message in st.session_state.messages:
+                if message["role"] != Sender.USER:
+                    if isinstance(message["content"], str):
+                        _render_message(message["role"], message["content"])
+                    elif isinstance(message["content"], list):
+                        for block in message["content"]:
+                            # the tool result we send back to the Anthropic API isn't sufficient to render all details,
+                            # so we store the tool use responses
+                            if isinstance(block, dict) and block["type"] == "tool_result":
+                                _render_message(
+                                    Sender.TOOL, st.session_state.tools[block["tool_use_id"]]
+                                )
+                            else:
+                                _render_message(
+                                    message["role"],
+                                    cast(BetaContentBlockParam | ToolResult, block),
+                                )
+            
+            st.markdown('</div>', unsafe_allow_html=True)
 
         # render past http exchanges
         for identity, (request, response) in st.session_state.responses.items():
             _render_api_response(request, response, identity, http_logs)
 
-        # render past chats
-        if new_message:
-            st.session_state.messages.append(
-                {
-                    "role": Sender.USER,
-                    "content": [
-                        *maybe_add_interruption_blocks(),
-                        BetaTextBlockParam(type="text", text=new_message),
-                    ],
-                }
-            )
-            _render_message(Sender.USER, new_message)
-
+        # Run the agent when we have a new user message
         try:
             most_recent_message = st.session_state["messages"][-1]
         except IndexError:
             return
 
-        if most_recent_message["role"] is not Sender.USER:
-            # we don't have a user message to respond to, exit early
-            return
-
-        with track_sampling_loop():
-            # run the agent sampling loop with the newest message
-            st.session_state.messages = await sampling_loop(
-                system_prompt_suffix=st.session_state.custom_system_prompt,
-                model=st.session_state.model,
-                provider=st.session_state.provider,
-                messages=st.session_state.messages,
-                output_callback=partial(_render_message, Sender.BOT),
-                tool_output_callback=partial(
-                    _tool_output_callback, tool_state=st.session_state.tools
-                ),
-                api_response_callback=partial(
-                    _api_response_callback,
-                    tab=http_logs,
-                    response_state=st.session_state.responses,
-                ),
-                api_key=st.session_state.api_key,
-                only_n_most_recent_images=st.session_state.only_n_most_recent_images,
-                tool_version=st.session_state.tool_versions,
-                max_tokens=st.session_state.output_tokens,
-                thinking_budget=st.session_state.thinking_budget
-                if st.session_state.thinking
-                else None,
-                token_efficient_tools_beta=st.session_state.token_efficient_tools_beta,
-            )
+        if most_recent_message["role"] is Sender.USER:
+            # Process the newest user message
+            with track_sampling_loop():
+                # run the agent sampling loop with the newest message
+                st.session_state.messages = await sampling_loop(
+                    system_prompt_suffix=st.session_state.custom_system_prompt,
+                    model=st.session_state.model,
+                    provider=st.session_state.provider,
+                    messages=st.session_state.messages,
+                    output_callback=partial(_render_message, Sender.BOT),
+                    tool_output_callback=partial(
+                        _tool_output_callback, tool_state=st.session_state.tools
+                    ),
+                    api_response_callback=partial(
+                        _api_response_callback,
+                        tab=http_logs,
+                        response_state=st.session_state.responses,
+                    ),
+                    api_key=st.session_state.api_key,
+                    only_n_most_recent_images=st.session_state.only_n_most_recent_images,
+                    tool_version=st.session_state.tool_versions,
+                    max_tokens=st.session_state.output_tokens,
+                    thinking_budget=st.session_state.thinking_budget
+                    if st.session_state.thinking
+                    else None,
+                    token_efficient_tools_beta=st.session_state.token_efficient_tools_beta,
+                )
+                # Clear the transcript after processing
+                st.session_state.transcript = ""
 
 
 def maybe_add_interruption_blocks():
@@ -470,6 +724,20 @@ def _render_error(error: Exception):
     st.error(f"**{error.__class__.__name__}**\n\n{body}", icon=":material/error:")
 
 
+def say_text(text: str):
+    client = OpenAI(api_key="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")
+    speech_file_path = "/home/computeruse/speech.mp3"
+
+    with client.audio.speech.with_streaming_response.create(
+        model="gpt-4o-mini-tts",
+        voice="coral",
+        input=text,
+        instructions="Speak very fast",
+    ) as response:
+        response.stream_to_file(speech_file_path)
+    
+    autoplay_audio(speech_file_path)
+
 def _render_message(
     sender: Sender,
     message: str | BetaContentBlockParam | ToolResult,
@@ -499,6 +767,7 @@ def _render_message(
         elif isinstance(message, dict):
             if message["type"] == "text":
                 st.write(message["text"])
+                # say_text(message["text"])
             elif message["type"] == "thinking":
                 thinking_content = message.get("thinking", "")
                 st.markdown(f"[Thinking]\n\n{thinking_content}")

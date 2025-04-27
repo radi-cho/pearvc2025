@@ -1,3 +1,7 @@
+asyncio
+elevenlabs
+python-dotenv
+openai
 streamlit==1.41.0
 anthropic[bedrock,vertex]>=0.39.0
 jsonschema==4.22.0

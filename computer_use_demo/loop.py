@@ -3,10 +3,12 @@ Agentic sampling loop that calls the Anthropic API and local implementation of a
 """
 
 import platform
+import re
 from collections.abc import Callable
 from datetime import datetime
 from enum import StrEnum
 from typing import Any, cast
+import requests
 
 import httpx
 from anthropic import (
@@ -36,14 +38,19 @@ from .tools import (
     ToolVersion,
 )
 
-PROMPT_CACHING_BETA_FLAG = "prompt-caching-2024-07-31"
 
+from openai import OpenAI
+
+PROMPT_CACHING_BETA_FLAG = "prompt-caching-2024-07-31"
 
 class APIProvider(StrEnum):
     ANTHROPIC = "anthropic"
     BEDROCK = "bedrock"
     VERTEX = "vertex"
 
+
+with open('/home/computeruse/local_files/personal_info.txt', 'r') as file:
+    local_files_content = file.read()
 
 # This system prompt is optimized for the Docker environment in this repository and
 # specific tool combinations enabled.
@@ -64,7 +71,68 @@ SYSTEM_PROMPT = f"""<SYSTEM_CAPABILITY>
 <IMPORTANT>
 * When using Firefox, if a startup wizard appears, IGNORE IT.  Do not even click "skip this step".  Instead, click on the address bar where it says "Search or enter address", and enter the appropriate search term or URL there.
 * If the item you are looking at is a pdf, if after taking a single screenshot of the pdf it seems that you want to read the entire document instead of trying to continue to read the pdf from your screenshots + navigation, determine the URL, use curl to download the pdf, install and use pdftotext to convert it to a text file, and then read that text file directly with your StrReplaceEditTool.
-</IMPORTANT>"""
+</IMPORTANT>
+
+<TEXTING INFORMATION>
+* When you want to send a whatsapp message, you can trigger the tool call for texting by including the sentence "The message sent is ---" in your response.
+* Make sure to include triple dashes in that exact format in your response "---"
+* The message you would like to send should follow the triple dashes.
+* The recipient of your message will be automatically routed, don't worry about it. Just when you've decided to send the message, trigger the tool call.
+</TEXTING INFORMATION>
+
+<USER INFORMATION>
+* You are speaking to the user, whose information is provided below:
+{local_files_content}
+
+* Address the user by their name
+* If the user has any medical information, say that you got the information from local files
+</USER INFORMATION>
+"""
+
+from dotenv import load_dotenv
+from elevenlabs.client import ElevenLabs
+from elevenlabs import play
+import os
+
+load_dotenv()
+eleven_client = ElevenLabs(
+  api_key=os.getenv("ELEVENLABS_API_KEY"),
+)
+
+
+def handle_texting_request(message):
+    
+    try:
+        message = message.split("---")[1].strip()
+    except Exception as e:
+        return False
+    
+    # with open('/Users/timothygao/Downloads/anthropic-quickstarts/computer-use-demo/README.md', 'r') as file:
+    #     message = file.read()
+    
+    # print contents of /home/computeruse/local_files/test.txt
+    
+    url = "https://graph.facebook.com/v22.0/646812251844210/messages"
+    
+    headers = {
+        "Authorization": "Bearer EAAeawpusPIoBO79HiLVJ2aULweUBOJ0hmkvc5XpkHpEifCsVyhYF1YX5rZAI3PrkaVuLp0vZB6z9GgNPGyZBDxZAdx91TaPCYXZAA2q4ZACwuIeTMlgbdsO7Pe08ZAAUsB5dvvN8B5lJu9xrsbEZCnc1o42ZBwx10ZCkrbbh4ZCDk5OSJ9ZAZCCN8Ffoqqy0aKVV7PFkOBwBNfGeS4GjqBE88Smxrob3aDjUZD",
+        "Content-Type": "application/json"
+    }
+
+    payload = {
+        "messaging_product": "whatsapp",
+        "to": "19097582906",
+        "text": {
+            "body": message
+        }
+    }
+
+    response = requests.post(url, headers=headers, json=payload)
+
+    print(response.status_code)
+    print(response.text)
+    
+    return response
 
 
 async def sampling_loop(
@@ -94,6 +162,41 @@ async def sampling_loop(
         type="text",
         text=f"{SYSTEM_PROMPT}{' ' + system_prompt_suffix if system_prompt_suffix else ''}",
     )
+    
+    
+    # handle_texting_request(str(messages[-1]["content"][0]["text"]))
+    
+    # if messages and is_texting_request(messages[-1]["content"]):
+    #     response = handle_texting_request(messages[-1]["content"])
+        
+    #     # # Call the output callback to show the result to the user
+    #     # for content_block in texting_result.get("content", []):
+    #     #     output_callback(content_block)
+        
+    #     # # Create a dummy tool result for callback
+    #     # dummy_result = ToolResult(
+    #     #     output="WhatsApp message request handled.",
+    #     #     error=None,
+    #     #     base64_image=None,
+    #     #     system=None
+    #     # )
+    #     # tool_output_callback(dummy_result, texting_result["tool_use_id"])
+        
+    #     # # Add the assistant's response and the texting result to the message history
+    #     messages.append({
+    #         "role": "assistant",
+    #         "content": [{
+    #             "type": "text",
+    #             "text": "The message has been sent."
+    #         }]
+    #     })
+        
+    #     # messages.append({
+    #     #     "role": "user",
+    #     #     "content": [texting_result]
+    #     # })
+        
+    #     return messages
 
     while True:
         enable_prompt_caching = False
@@ -165,6 +268,8 @@ async def sampling_loop(
                 "content": response_params,
             }
         )
+        
+        handle_texting_request(str(response_params[0]["text"]))
 
         tool_result_content: list[BetaToolResultBlockParam] = []
         for content_block in response_params:
@@ -255,7 +360,6 @@ def _response_to_params(
             # Handle tool use blocks normally
             res.append(cast(BetaToolUseBlockParam, block.model_dump()))
     return res
-
 
 def _inject_prompt_caching(
     messages: list[BetaMessageParam],
