@@ -3,8 +3,8 @@
 This project leverages a computer agent built on top of **Anthropic's stack**, including **Claude**, the **Anthropic API**, and other key technologies. We've extended it with several key features:
 
 - **Tool Use**: The agent can interact with external tools for enhanced functionality.
-- **Parallel Planning**: It can perform complex planning tasks in parallel to optimize decision-making and problem-solving.
-- **Physical Device Control**: Importantly, the AI agent can interface with and control physical devices, bridging the gap between virtual and physical worlds.
+- **Multi-Agent Planning**: It can perform complex planning tasks by leveraging the capabilities of multiple agents.
+- **3-way System Integration**: Importantly, the AI agent can interface with and control physical devices, bridging the gap between virtual and physical worlds. It can access browsers, mobile phones, and local information in operating systems, to create a combined interface that maximizes personalization.
 
 ## Development Environment Setup
 
